@@ -1,0 +1,9 @@
+Summary
+
+This procedure automates data cleaning, validation, and insertion from staging into production tables for 3-month draft delivery plans, with:
+	•	Duplicate checking
+	•	Transaction safety
+	•	Proper logging
+	•	Handling of multiple production tables
+
+Essentially, it’s a full ETL-like process implemented inside Snowflake using JavaScript stored procedures.
