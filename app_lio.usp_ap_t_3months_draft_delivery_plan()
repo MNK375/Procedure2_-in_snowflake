@@ -1,0 +1,193 @@
+CREATE OR REPLACE PROCEDURE app_lio.usp_ap_t_3months_draft_delivery_plan()
+RETURNS OBJECT
+LANGUAGE JAVASCRIPT
+COMMENT = 'USP-APP-01016'
+EXECUTE AS CALLER
+AS
+$$
+try {
+  const process_id = 'USP_AP_T_3MONTHS_DRAFT_DELIVERY_PLAN';
+  snowflake.execute({ sqlText: 'USE SCHEMA APP_LIO;' });
+  snowflake.execute({ sqlText: `ALTER SESSION SET TIMEZONE = 'Asia/Tokyo'`});
+  snowflake.execute({ sqlText: 'BEGIN;' });
+  snowflake.execute({ 
+    sqlText: `
+      CREATE OR REPLACE TEMPORARY TABLE rfz_vc_opt.tmp_str_dw_v_3months_draft_delivery_plan AS
+        SELECT
+          dlz_id,
+          file_name,
+          sheet_name,
+          link_datetime,
+          from_date,
+          to_date,
+          record_date,
+          lng_ship_name,
+          delv_quantity_value,
+          lbv_loading_date,
+          create_at,
+          update_at,
+          process_at,
+          process_id
+        FROM
+          rfz_vc_opt.str_dw_v_3months_draft_delivery_plan_01
+        WHERE
+          METADATA$ACTION = 'INSERT' 
+    `
+  });
+  
+  let select_sql_records =`
+    SELECT
+      *
+    FROM
+      rfz_vc_opt.tmp_str_dw_v_3months_draft_delivery_plan`;
+
+  result_dup = snowflake.execute({
+    sqlText: `
+      WITH temp1 AS (${select_sql_records})
+      SELECT
+        file_name,
+        link_datetime,
+        from_date
+      FROM
+        temp1
+      GROUP BY
+        file_name,
+        link_datetime,
+        from_date
+      HAVING
+        1 < COUNT(*)
+    `
+  });
+  let duplication_check_text = '';
+  let duplication_check_tab = [];
+  i=0;
+  while(result_dup.next()){
+    duplication_check_text += `Duplication of Primary Keys Value: ${result_dup.getColumnValue("FILE_NAME")} | ${result_dup.getColumnValue("LINK_DATETIME")} | ${result_dup.getColumnValue("FROM_DATE")}<br/>`;
+    duplication_check_tab[i]= `'Duplication of Primary Keys Value: ${result_dup.getColumnValue("FILE_NAME")} | ${result_dup.getColumnValue("LINK_DATETIME")} | ${result_dup.getColumnValue("FROM_DATE")}'`;
+    i++;
+  }
+  if ((duplication_check_text.length)){
+    var result = snowflake.execute({
+        sqlText: `
+          CALL app_lio.usp_app_lios_log_errors(
+            '${process_id}',
+            '${duplication_check_text}',
+            [${duplication_check_tab}]
+          )`
+    }); 
+
+    throw duplication_check_text; 
+    if(result.next()){
+      var message = result.getColumnValue(1); 
+      if(message != "SUCCESS") throw message;
+    }
+  }
+
+  snowflake.execute({
+    sqlText: `
+      MERGE INTO 
+        app_lio.ap_t_3months_draft_delivery_plan AS target
+      USING (
+        WITH temp1 AS (${select_sql_records})
+        SELECT
+          *
+        FROM temp1
+        QUALIFY ROW_NUMBER() OVER  (PARTITION BY temp1.file_name, temp1.link_datetime, temp1.from_date  ORDER BY  temp1.create_at DESC ) =  1
+      ) AS source ON
+        target.file_name = source.file_name
+        AND target.data_imported_at = source.link_datetime
+        AND target.from_date = source.from_date
+      WHEN NOT MATCHED THEN
+        INSERT (
+          app_id,
+          file_name,
+          sheet_name,
+          data_imported_at,
+          from_date,
+          to_date,
+          record_date,
+          lng_ship_name,
+          delv_quantity_value,
+          lbv_loading_date,
+          create_at,
+          update_at,
+          process_at,
+          process_id
+        ) VALUES (
+          source.dlz_id,
+          source.file_name,
+          source.sheet_name,
+          source.link_datetime,
+          source.from_date,
+          source.to_date,
+          source.record_date,
+          source.lng_ship_name,
+          source.delv_quantity_value,
+          source.lbv_loading_date,
+          CURRENT_TIMESTAMP(),
+          NULL,
+          CURRENT_TIMESTAMP(),
+          '${process_id}'
+        );
+    `
+  });
+    
+  snowflake.execute({
+    sqlText: `
+      MERGE INTO 
+        app_lio.ap_t_gas_consum_plan_west AS target
+      USING (
+        WITH temp1 AS (${select_sql_records})
+        SELECT
+          dlz_id,
+          file_name,
+          link_datetime,
+          create_at
+        FROM temp1
+        QUALIFY ROW_NUMBER() OVER  (PARTITION BY temp1.file_name, temp1.link_datetime  ORDER BY  temp1.create_at DESC ) =  1
+      ) AS source ON
+        target.file_name = source.file_name
+        AND target.data_imported_at = source.link_datetime
+      WHEN NOT MATCHED THEN
+        INSERT (
+          app_id,
+          file_type_code,
+          file_name,
+          data_imported_at,
+          planned_date,
+          planned_memo_text,
+          create_at,
+          update_at,
+          process_at,
+          process_id	
+        ) VALUES (
+          source.dlz_id,
+          2,
+          source.file_name,
+          source.link_datetime,
+          NULL,
+          NULL,
+          CURRENT_TIMESTAMP(),
+          NULL,
+          CURRENT_TIMESTAMP(),
+          '${process_id}'
+        );
+    `
+  });
+  snowflake.execute({ sqlText: `COMMIT;` });
+  return {
+    "status": "SUCCESS"
+  };
+  }
+catch (err) {
+  snowflake.execute({ sqlText: `ROLLBACK;` });
+  snowflake.execute({ 
+    sqlText: `
+      CREATE OR REPLACE TEMPORARY TABLE to_empty_stream AS
+        SELECT * FROM rfz_vc_opt.str_dw_v_3months_draft_delivery_plan_01 no1;
+    `
+  });
+  snowflake.execute({ sqlText: 'DROP TABLE to_empty_stream;' });
+  throw err;
+}
+$$;
